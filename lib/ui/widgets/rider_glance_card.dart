@@ -100,7 +100,7 @@ class RiderGlanceCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            transcript.isNotEmpty ? '"$transcript"' : 'Say "Hey Device" followed by your command...',
+            transcript.isNotEmpty ? '"$transcript"' : 'Say "Hey Jarvis", then your command...',
             style: TextStyle(
               color: transcript.isNotEmpty ? AppColors.neonCyan : AppColors.textSecondary,
               fontSize: 15,

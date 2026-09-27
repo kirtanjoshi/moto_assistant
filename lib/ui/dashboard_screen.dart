@@ -9,6 +9,7 @@ import '../services/intercom_audio_service.dart';
 import '../services/intent_parser_service.dart';
 import '../services/media_intent_service.dart';
 import '../services/speech_service.dart';
+import '../services/system_status_service.dart';
 import 'widgets/quick_action_card.dart';
 import 'widgets/rider_glance_card.dart';
 import 'widgets/voice_wave_visualizer.dart';
@@ -27,6 +28,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final MediaIntentService _mediaService = MediaIntentService();
   final IntercomAudioService _audioService = IntercomAudioService();
   final AudioFeedbackService _feedbackService = AudioFeedbackService();
+  final SystemStatusService _statusService = SystemStatusService();
 
   bool _isScoActive = false;
 
@@ -45,8 +47,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     try {
       await _audioService.stopBluetoothSco();
-      // Request audio/storage permissions so app can locate song files
-      await [Permission.audio, Permission.storage].request();
+      // Audio/storage to find song files; phone so voice calls can be placed with the screen off
+      await [Permission.audio, Permission.storage, Permission.phone].request();
     } catch (_) {}
     _isScoActive = false;
 
@@ -54,9 +56,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       print('[MotoVoice] onWakeWord callback fired');
     };
 
-    _speechService.onCommand = (rawText) {
+    _speechService.onCommand = (rawText) async {
       print('[MotoVoice] onCommand callback received: "$rawText"');
-      _executeCommand(rawText);
+      await _executeCommand(rawText);
     };
 
     _speechService.onError = (err) {
@@ -68,7 +70,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _executeCommand(String commandText) async {
-    final intent = _intentParser.parse(commandText);
+    final intents = _intentParser.parseAll(commandText);
+    for (var i = 0; i < intents.length; i++) {
+      // Give an app opened by the previous step a moment to come up before the next action.
+      if (i > 0) await Future.delayed(const Duration(milliseconds: 1200));
+      await _executeIntent(intents[i], commandText);
+    }
+  }
+
+  Future<void> _executeIntent(ParsedIntent intent, String commandText) async {
     print('[MotoVoice] Executing parsed intent: ${intent.type}');
 
     switch (intent.type) {
@@ -88,6 +98,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final app = intent.targetApp;
         _feedbackService.speak('Playing $query');
         await _mediaService.playMedia(query: query, targetApp: app);
+        break;
+
+      case IntentType.playArtist:
+        final artist = intent.slots['artist'] ?? '';
+        _feedbackService.speak('Playing $artist');
+        await _mediaService.playMedia(query: artist);
         break;
 
       case IntentType.nextTrack:
@@ -127,10 +143,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
         await _audioService.adjustVolume('mute');
         break;
 
+      case IntentType.volumeUnmute:
+        await _audioService.adjustVolume('unmute');
+        break;
+
+      case IntentType.setVolume:
+        final percent = intent.volumePercent ?? 50;
+        await _audioService.setVolumePercent(percent);
+        _feedbackService.speak('Volume set to $percent percent');
+        break;
+
       case IntentType.makeCall:
         final target = intent.phoneNumber ?? '';
         _feedbackService.speak('Calling $target');
         await _mediaService.makePhoneCall(target);
+        break;
+
+      case IntentType.openApp:
+        final app = intent.targetApp ?? '';
+        final opened = await _mediaService.openApp(app);
+        _feedbackService.speak(opened ? 'Opening $app' : 'I could not find $app');
         break;
 
       case IntentType.timeStatus:
@@ -139,12 +171,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _feedbackService.speak('It is $timeStr');
         break;
 
+      case IntentType.dateStatus:
+        final today = DateTime.now();
+        final dateStr = DateFormat('MMMM d, y').format(today);
+        _feedbackService.speak('Today is $dateStr');
+        break;
+
       case IntentType.batteryStatus:
-        _feedbackService.speak('Battery levels normal');
+        final level = await _statusService.getBatteryLevel();
+        _feedbackService.speak(
+          level != null ? 'Battery is at $level percent' : 'Battery status unavailable',
+        );
         break;
 
       case IntentType.unknown:
         print('[MotoVoice] Unrecognized command: $commandText');
+        _feedbackService.speak('Sorry, I didn\'t understand.');
         break;
     }
   }
@@ -195,27 +237,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.surfaceLight),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.wifi_off_rounded, size: 16, color: AppColors.neonGreen),
-                SizedBox(width: 6),
-                Text(
-                  '100% OFFLINE',
-                  style: TextStyle(
-                    color: AppColors.neonGreen,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
+          ValueListenableBuilder<bool>(
+            valueListenable: _speechService.onDeviceSttNotifier,
+            builder: (context, offline, _) {
+              final color = offline ? AppColors.neonGreen : AppColors.neonAmber;
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.surfaceLight),
                 ),
-              ],
-            ),
+                child: Row(
+                  children: [
+                    Icon(offline ? Icons.wifi_off_rounded : Icons.wifi_rounded, size: 16, color: color),
+                    const SizedBox(width: 6),
+                    Text(
+                      offline ? 'OFFLINE' : 'ONLINE STT',
+                      style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
           IconButton(
             icon: const Icon(Icons.settings_rounded, color: AppColors.textPrimary),
@@ -252,7 +296,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   );
                 },
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
+
+              ValueListenableBuilder<bool>(
+                valueListenable: _speechService.ridingModeNotifier,
+                builder: (context, on, _) {
+                  return SwitchListTile(
+                    value: on,
+                    onChanged: _speechService.setRidingMode,
+                    activeThumbColor: AppColors.neonGreen,
+                    tileColor: AppColors.surface,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    secondary: Icon(
+                      Icons.hearing_rounded,
+                      color: on ? AppColors.neonGreen : AppColors.textMuted,
+                    ),
+                    title: const Text(
+                      'RIDING MODE',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    subtitle: Text(
+                      on ? '"Hey Jarvis" works with screen off' : 'Off - no background battery use',
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
 
               // 2. Central Mic / Animated Visualizer (Tap to manually wake)
               Expanded(

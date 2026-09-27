@@ -63,4 +63,22 @@ class SettingsService {
       await prefs.setString(_keyMusicPlayer, packageName);
     } catch (_) {}
   }
+
+  static const String _keyWakeThreshold = 'pref_wake_threshold';
+  static const String _keyRidingMode = 'pref_riding_mode';
+  // Rider's own tuned value: on the Nothing A059 real "Hey Jarvis" scores ranged 0.06-0.26, never near 0.5.
+  // ponytail: one global value; a per-voice verifier model is the upgrade if false wakes become a problem.
+  static const double defaultWakeThreshold = 0.025;
+
+  static Future<double> getWakeThreshold() async =>
+      (await SharedPreferences.getInstance()).getDouble(_keyWakeThreshold) ?? defaultWakeThreshold;
+
+  static Future<void> setWakeThreshold(double value) async =>
+      (await SharedPreferences.getInstance()).setDouble(_keyWakeThreshold, value);
+
+  static Future<bool> getRidingMode() async =>
+      (await SharedPreferences.getInstance()).getBool(_keyRidingMode) ?? true;
+
+  static Future<void> setRidingMode(bool value) async =>
+      (await SharedPreferences.getInstance()).setBool(_keyRidingMode, value);
 }

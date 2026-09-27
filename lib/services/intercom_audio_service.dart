@@ -42,4 +42,16 @@ class IntercomAudioService {
       return false;
     }
   }
+
+  Future<bool> setVolumePercent(int percent) async {
+    try {
+      final bool? result = await _channel.invokeMethod<bool>(
+        'setVolumePercent',
+        {'percent': percent.clamp(0, 100)},
+      );
+      return result ?? false;
+    } catch (e) {
+      return false;
+    }
+  }
 }

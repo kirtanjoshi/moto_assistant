@@ -5,25 +5,23 @@ import 'settings_service.dart';
 class MediaIntentService {
   static const MethodChannel _channel = MethodChannel('com.motovoice.moto_assistant/media_control');
 
-  Future<bool> playMedia({required String query, String? targetApp}) async {
-    String? packageName;
-    final lowerApp = (targetApp ?? '').toLowerCase();
-
-    if (lowerApp.contains('spotify')) {
-      packageName = 'com.spotify.music';
-    } else if (lowerApp.contains('youtube') || lowerApp.contains('yt')) {
-      packageName = 'com.google.android.apps.youtube.music';
-    } else if (lowerApp.contains('vlc')) {
-      packageName = 'org.videolan.vlc';
-    } else if (lowerApp.contains('mp3') || lowerApp.contains('music player') || lowerApp.contains('player')) {
-      packageName = 'musicplayer.musicapps.music.mp3player';
-    } else {
-      // Read dynamic user preference from Settings
-      final savedPlayer = await SettingsService.getSelectedMusicPlayer();
-      if (savedPlayer != 'system_prompt') {
-        packageName = savedPlayer;
-      }
+  static String? _knownPackage(String lowerApp) {
+    if (lowerApp.contains('spotify')) return 'com.spotify.music';
+    if (lowerApp.contains('youtube') || lowerApp.contains('yt')) return 'com.google.android.apps.youtube.music';
+    if (lowerApp.contains('vlc')) return 'org.videolan.vlc';
+    if (lowerApp.contains('mp3') || lowerApp.contains('music player') || lowerApp.contains('player')) {
+      return 'musicplayer.musicapps.music.mp3player';
     }
+    return null;
+  }
+
+  static Future<String?> _savedPlayer() async {
+    final saved = await SettingsService.getSelectedMusicPlayer();
+    return saved == 'system_prompt' ? null : saved;
+  }
+
+  Future<bool> playMedia({required String query, String? targetApp}) async {
+    final packageName = _knownPackage((targetApp ?? '').toLowerCase()) ?? await _savedPlayer();
 
     try {
       final bool? result = await _channel.invokeMethod<bool>('playMediaFromSearch', {
@@ -38,6 +36,19 @@ class MediaIntentService {
           return await launchUrl(uri);
         }
       }
+      return false;
+    }
+  }
+
+  // "music"/"music player" -> the player chosen in Settings; otherwise native matches installed app labels.
+  Future<bool> openApp(String name) async {
+    final lower = name.toLowerCase();
+    final package = (lower == 'music' || lower == 'music player')
+        ? await _savedPlayer()
+        : _knownPackage(lower);
+    try {
+      return await _channel.invokeMethod<bool>('openApp', {'package': package, 'name': lower}) ?? false;
+    } catch (_) {
       return false;
     }
   }

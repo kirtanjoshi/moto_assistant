@@ -1,38 +1,55 @@
-// ignore_for_file: avoid_print
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'intent_parser_service.dart';
-import '../models/parsed_intent.dart';
+import 'settings_service.dart';
+
+enum VoiceLoopState {
+  wakeWordListening, // WAKE_WORD_LISTENING: background wake-word detector active
+  commandListening,  // COMMAND_LISTENING: STT capturing speech with timeout
+  processing,        // PROCESSING: Parsing deterministic intent
+  executing,         // EXECUTING: Running Android intent / MediaStore / phone / volume
+  speaking,          // SPEAKING: TTS feedback active
+}
 
 class MotoVoiceSpeechService {
+  static const MethodChannel wakeChannel = MethodChannel('com.motovoice.moto_assistant/wakeword');
+  static const MethodChannel _audioChannel = MethodChannel('com.motovoice.moto_assistant/audio_routing');
+  static const Duration _commandTimeout = Duration(seconds: 6);
+
   final stt.SpeechToText _speech = stt.SpeechToText();
-  final IntentParserService _parser = IntentParserService();
 
   bool _isInitialized = false;
-  bool _isListening = false;
-  bool _isAwake = false;
   bool _isDisposed = false;
+  VoiceLoopState _state = VoiceLoopState.wakeWordListening;
 
-  Timer? _awakeTimer;
+  Timer? _commandTimer;
+  Timer? _safetyRecoveryTimer;
 
-  List<String> wakeWords = ['hey device', 'device', 'hey moto', 'moto'];
+  List<String> wakeWords = ['hey jarvis', 'jarvis', 'hey device', 'device', 'hey moto', 'moto'];
 
+  final ValueNotifier<VoiceLoopState> stateNotifier = ValueNotifier<VoiceLoopState>(VoiceLoopState.wakeWordListening);
   final ValueNotifier<String> partialTextNotifier = ValueNotifier<String>('');
   final ValueNotifier<String> liveHeardNotifier = ValueNotifier<String>('');
   final ValueNotifier<bool> isAwakeNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<String> statusNotifier = ValueNotifier<String>('Starting...');
+  final ValueNotifier<bool> ridingModeNotifier = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> onDeviceSttNotifier = ValueNotifier<bool>(false);
+
+  String get _standbyStatus =>
+      ridingModeNotifier.value ? 'Listening for Hey Jarvis' : 'Riding mode off - tap mic';
 
   VoidCallback? onWakeWord;
-  Function(String command)? onCommand;
+  Future<void> Function(String command)? onCommand;
   Function(String error)? onError;
 
   bool get isInitialized => _isInitialized;
-  bool get isListening => _isListening;
-  bool get isAwake => _isAwake;
+  VoiceLoopState get state => _state;
+  bool get isListening => _state == VoiceLoopState.commandListening;
+  bool get isAwake => _state != VoiceLoopState.wakeWordListening;
 
   Future<bool> init({List<String>? customWakeWords}) async {
     if (_isInitialized) return true;
@@ -41,190 +58,282 @@ class MotoVoiceSpeechService {
       wakeWords = customWakeWords.map((w) => w.toLowerCase().trim()).toList();
     }
 
-    statusNotifier.value = 'Checking permissions...';
+    _updateState(VoiceLoopState.wakeWordListening, 'Checking permissions...');
     final micStatus = await Permission.microphone.request();
     if (!micStatus.isGranted) {
-      statusNotifier.value = 'Mic Permission Denied';
+      _updateState(VoiceLoopState.wakeWordListening, 'Mic Permission Denied');
       onError?.call('Microphone permission denied.');
       return false;
     }
 
-    try {
-      statusNotifier.value = 'Initializing Android Speech...';
-      print('[MotoVoice STT] Initializing on-device speech engine...');
+    // Android 13+: without this the riding-mode notification is hidden (the service still runs).
+    await Permission.notification.request();
 
+    // Register native wake-word bridge handler
+    wakeChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onWakeWordDetected') {
+        final score = call.arguments?['score'] ?? 0.0;
+        print('[MotoVoice State] Native Wake Event | score: $score | currentState: $_state');
+        _handleWakeWordTrigger(score: (score as num).toDouble());
+      } else if (call.method == 'onRidingModeChanged') {
+        ridingModeNotifier.value = call.arguments == true;
+        if (_state == VoiceLoopState.wakeWordListening) statusNotifier.value = _standbyStatus;
+      }
+    });
+
+    try {
+      _updateState(VoiceLoopState.wakeWordListening, 'Initializing Android Speech...');
       final available = await _speech.initialize(
         onStatus: _handleStatus,
         onError: _handleError,
-        debugLogging: true,
+        debugLogging: false,
       );
 
       if (!available) {
-        statusNotifier.value = 'Speech engine unavailable';
+        _updateState(VoiceLoopState.wakeWordListening, 'Speech engine unavailable');
         onError?.call('Speech recognition is not available on this device.');
         return false;
       }
 
       _isInitialized = true;
-      statusNotifier.value = 'Ready (Tap mic to speak)';
-      print('[MotoVoice STT] Speech engine initialized successfully!');
+      try {
+        onDeviceSttNotifier.value =
+            await _audioChannel.invokeMethod<bool>('isOnDeviceSpeechAvailable') ?? false;
+      } catch (_) {}
+
+      // Mic permission is granted by now, so the native detector can actually open the mic.
+      await wakeChannel.invokeMethod('setThreshold', {'threshold': await SettingsService.getWakeThreshold()});
+      await setRidingMode(await SettingsService.getRidingMode(), persist: false);
+      _updateState(VoiceLoopState.wakeWordListening, _standbyStatus);
       return true;
     } catch (e) {
-      print('[MotoVoice STT] Init exception: $e');
-      statusNotifier.value = 'Init Error: $e';
+      print('[MotoVoice State] Init error: $e');
+      _updateState(VoiceLoopState.wakeWordListening, 'Init Error: $e');
       onError?.call('Init Error: $e');
       return false;
     }
   }
 
-  void _handleStatus(String status) {
-    if (_isDisposed) return;
-    print('[MotoVoice STT] Engine status: $status');
+  // Riding mode = foreground service keeping "Hey Jarvis" alive with the screen off. Off = zero background cost.
+  Future<void> setRidingMode(bool enabled, {bool persist = true}) async {
+    var ok = false;
+    try {
+      ok = await wakeChannel.invokeMethod<bool>('setRidingMode', {'enabled': enabled}) ?? false;
+    } catch (_) {}
+    ridingModeNotifier.value = enabled && ok;
+    if (persist) await SettingsService.setRidingMode(enabled);
+    if (_state == VoiceLoopState.wakeWordListening) statusNotifier.value = _standbyStatus;
+  }
 
-    if (status == 'listening') {
-      _isListening = true;
-      statusNotifier.value = 'Listening... Speak now!';
-    } else if (status == 'notListening' || status == 'done') {
-      _isListening = false;
-      if (!_isAwake) {
-        statusNotifier.value = 'Ready (Tap mic to speak)';
-      }
+  void _updateState(VoiceLoopState newState, String statusMsg) {
+    if (_isDisposed) return;
+    _state = newState;
+    stateNotifier.value = newState;
+    isAwakeNotifier.value = (newState != VoiceLoopState.wakeWordListening);
+    statusNotifier.value = statusMsg;
+    print('[MotoVoice State] STATE: ${_stateToString(newState)} | "$statusMsg"');
+  }
+
+  String _stateToString(VoiceLoopState s) {
+    switch (s) {
+      case VoiceLoopState.wakeWordListening: return 'WAKE_WORD_LISTENING';
+      case VoiceLoopState.commandListening:  return 'COMMAND_LISTENING';
+      case VoiceLoopState.processing:        return 'PROCESSING';
+      case VoiceLoopState.executing:         return 'EXECUTING';
+      case VoiceLoopState.speaking:          return 'SPEAKING';
     }
   }
 
-  void _handleError(SpeechRecognitionError error) {
+  // 1. Wake word detected or manual mic button tapped
+  void manualWake() => _handleWakeWordTrigger();
+
+  Future<void> _handleWakeWordTrigger({double? score}) async {
     if (_isDisposed) return;
-    print('[MotoVoice STT] Engine info: ${error.errorMsg} (permanent: ${error.permanent})');
-    _isListening = false;
-    if (!_isAwake) {
-      statusNotifier.value = 'Ready (Tap mic to speak)';
+
+    // Duplicate-trigger protection
+    if (_state != VoiceLoopState.wakeWordListening) {
+      print('[MotoVoice State] Wake trigger ignored (already in ${_stateToString(_state)})');
+      return;
     }
-  }
-
-  Future<void> startListening() => manualWake();
-
-  Future<void> manualWake() async {
-    print('[MotoVoice STT] Manual mic tap triggered');
-    _triggerWake();
 
     if (!_isInitialized) {
       final ok = await init();
       if (!ok) return;
     }
 
+    print('[MotoVoice State] ---> WAKE TRIGGERED: Releasing wake detector & starting STT');
+    // Showing the score lets the rider calibrate the threshold slider against their own voice/mic.
+    _updateState(
+      VoiceLoopState.commandListening,
+      score == null ? 'Listening...' : 'Listening... (wake score ${score.toStringAsFixed(2)})',
+    );
+    partialTextNotifier.value = '';
+    liveHeardNotifier.value = '';
+    onWakeWord?.call();
+
+    // Ensure native detector has completely stopped/released mic
+    try {
+      await wakeChannel.invokeMethod('stopWakeWord');
+    } catch (_) {}
+
+    // Duck any playing music so the recognizer hears the rider, not the song.
+    try {
+      await _audioChannel.invokeMethod('requestAudioFocus');
+    } catch (_) {}
+
+    // Audible "I'm listening" cue; the 250ms gap lets it finish (and the mic release) before STT opens.
+    try {
+      await _audioChannel.invokeMethod('beep');
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 250));
+
     try {
       if (_speech.isListening) {
         await _speech.cancel();
-        await Future.delayed(const Duration(milliseconds: 200));
+        await Future.delayed(const Duration(milliseconds: 150));
       }
 
-      print('[MotoVoice STT] Calling _speech.listen()...');
       await _speech.listen(
         onResult: _onSpeechResult,
         listenOptions: stt.SpeechListenOptions(
           listenMode: stt.ListenMode.confirmation,
           cancelOnError: false,
           partialResults: true,
+          // The plugin falls back to the normal (online) recognizer when no offline model is installed.
+          onDevice: true,
         ),
       );
-      _isListening = true;
-      statusNotifier.value = 'Listening... Speak now!';
-      print('[MotoVoice STT] Listening successfully started!');
+
+      _armCommandTimer();
     } catch (e) {
-      print('[MotoVoice STT] Exception in manualWake: ');
-      statusNotifier.value = 'Ready (Tap mic to speak)';
+      print('[MotoVoice State] Exception starting STT: $e');
+      _recoverToWakeWordStandby();
     }
+  }
+
+  // Restarted on every partial result, so it only fires after silence, never mid-sentence.
+  void _armCommandTimer() {
+    _commandTimer?.cancel();
+    _commandTimer = Timer(_commandTimeout, () {
+      print('[MotoVoice State] Command listening timeout expired with no speech.');
+      _recoverToWakeWordStandby();
+    });
   }
 
   void _onSpeechResult(SpeechRecognitionResult result) {
+    if (_state != VoiceLoopState.commandListening) return;
+
     final words = result.recognizedWords.trim();
     if (words.isEmpty) return;
 
-    final lower = words.toLowerCase();
-    print('[MotoVoice STT] Heard: "$lower" (final: ${result.finalResult}, isAwake: $_isAwake)');
     partialTextNotifier.value = words;
     liveHeardNotifier.value = words;
 
-    // Check if user spoke a wake word
-    for (final ww in wakeWords) {
-      if (lower.startsWith(ww) || lower.contains(ww)) {
-        if (!_isAwake) {
-          _triggerWake();
-        }
-        if (result.finalResult) {
-          _dispatchCommand(lower);
-        }
-        return;
-      }
-    }
-
-    // Direct command execution (e.g. "play people in music player", "volume up", etc.)
+    // Wait for the recognizer's final result (it ends after the rider stops talking);
+    // acting on partials cut off compound commands like "open X and play Y".
     if (result.finalResult) {
-      final parsed = _parser.parse(lower);
-      if (parsed.type != IntentType.unknown) {
-        print('[MotoVoice STT] Direct command matched: ${parsed.type} ("$lower")');
-        _dispatchCommand(lower);
-        return;
+      _processAndExecuteCommand(words.toLowerCase());
+    } else {
+      _armCommandTimer();
+    }
+  }
+
+  Future<void> _processAndExecuteCommand(String commandText) async {
+    if (_state != VoiceLoopState.commandListening) return;
+
+    _commandTimer?.cancel();
+    _updateState(VoiceLoopState.processing, 'Processing...');
+
+    // Stop STT to release microphone before execution & TTS
+    try {
+      await _speech.stop();
+    } catch (_) {}
+
+    _updateState(VoiceLoopState.executing, 'Executing...');
+
+    // Safety watchdog: ensure state recovers within 12 seconds if execution hangs
+    _safetyRecoveryTimer?.cancel();
+    _safetyRecoveryTimer = Timer(const Duration(seconds: 12), () {
+      print('[MotoVoice State] Safety watchdog triggered recovery');
+      _recoverToWakeWordStandby();
+    });
+
+    try {
+      if (onCommand != null) {
+        await onCommand!(commandText);
+      }
+    } catch (e) {
+      print('[MotoVoice State] Execution exception: $e');
+    }
+
+    // Wait a brief window before resuming wake word so TTS has finished
+    await Future.delayed(const Duration(milliseconds: 1500));
+    _recoverToWakeWordStandby();
+  }
+
+  void _handleStatus(String status) {
+    if (_isDisposed) return;
+    print('[MotoVoice State] STT engine status: $status (currentState: $_state)');
+
+    if (status == 'notListening' || status == 'done') {
+      if (_state == VoiceLoopState.commandListening) {
+        // If STT stopped with no final result, trigger recovery
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (_state == VoiceLoopState.commandListening) {
+            _recoverToWakeWordStandby();
+          }
+        });
       }
     }
+  }
 
-    // If already awake and final result arrived (e.g. raw song name query)
-    if (_isAwake && result.finalResult) {
-      _dispatchCommand(lower);
+  void _handleError(SpeechRecognitionError error) {
+    if (_isDisposed) return;
+    print('[MotoVoice State] STT engine error: ${error.errorMsg} (permanent: ${error.permanent})');
+
+    if (_state == VoiceLoopState.commandListening) {
+      statusNotifier.value = 'Sorry, I didn\'t understand.';
+      _recoverToWakeWordStandby();
     }
   }
 
-  void _triggerWake() {
-    _isAwake = true;
-    isAwakeNotifier.value = true;
-    statusNotifier.value = 'Listening... Speak now!';
-    onWakeWord?.call();
+  // Guaranteed Recovery to WAKE_WORD_LISTENING
+  Future<void> _recoverToWakeWordStandby() async {
+    if (_isDisposed) return;
 
-    _awakeTimer?.cancel();
-    _awakeTimer = Timer(const Duration(seconds: 12), () {
-      print('[MotoVoice STT] Wake window timed out');
-      _isAwake = false;
-      isAwakeNotifier.value = false;
-      statusNotifier.value = 'Ready (Tap mic to speak)';
-      _speech.stop();
-    });
-  }
+    _commandTimer?.cancel();
+    _safetyRecoveryTimer?.cancel();
 
-  void _dispatchCommand(String command) {
-    print('[MotoVoice STT] Dispatching command: "$command"');
-    _awakeTimer?.cancel();
-    _isAwake = false;
-    isAwakeNotifier.value = false;
-    statusNotifier.value = 'Executing...';
-    onCommand?.call(command);
+    try {
+      if (_speech.isListening) {
+        await _speech.stop();
+      }
+    } catch (_) {}
 
-    // Stop listening during execution and return to ready state
-    _speech.stop().then((_) {
-      _isListening = false;
-      Future.delayed(const Duration(milliseconds: 2500), () {
-        if (!_isDisposed && !_isAwake) {
-          statusNotifier.value = 'Ready (Tap mic to speak)';
-        }
-      });
-    });
+    _updateState(VoiceLoopState.wakeWordListening, _standbyStatus);
+
+    try {
+      await _audioChannel.invokeMethod('abandonAudioFocus');
+    } catch (_) {}
+
+    // Resume native wake word detector (native ignores this when riding mode is off)
+    try {
+      await Future.delayed(const Duration(milliseconds: 200));
+      await wakeChannel.invokeMethod('startWakeWord');
+      print('[MotoVoice State] ---> WAKE_WORD_LISTENING restored cleanly.');
+    } catch (e) {
+      print('[MotoVoice State] Error restarting native wake word: $e');
+    }
   }
 
   Future<void> stopListening() async {
-    try {
-      _awakeTimer?.cancel();
-      _isAwake = false;
-      isAwakeNotifier.value = false;
-      await _speech.stop();
-      _isListening = false;
-      statusNotifier.value = 'Ready (Tap mic to speak)';
-    } catch (e) {
-      print('[MotoVoice STT] Stop error: $e');
-    }
+    await _recoverToWakeWordStandby();
   }
 
   void dispose() {
     _isDisposed = true;
-    _awakeTimer?.cancel();
+    _commandTimer?.cancel();
+    _safetyRecoveryTimer?.cancel();
     _speech.stop();
   }
 }

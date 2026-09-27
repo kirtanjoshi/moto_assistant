@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 class AudioFeedbackService {
   final FlutterTts _tts = FlutterTts();
   bool _isInitialized = false;
+  VoidCallback? onCompletion;
 
   Future<void> init() async {
     if (_isInitialized) return;
@@ -10,6 +12,9 @@ class AudioFeedbackService {
       await _tts.setLanguage('en-US');
       await _tts.setPitch(1.0);
       await _tts.setSpeechRate(0.55); // Slightly faster for quick helmet audio feedback
+      _tts.setCompletionHandler(() {
+        onCompletion?.call();
+      });
       _isInitialized = true;
     } catch (e) {
       // Fallback

@@ -6,6 +6,8 @@ class IntentParserService {
 
     // Strip leading wake words if the whole utterance was captured
     final wakeWords = [
+      'hey jarvis',
+      'jarvis',
       'hey device',
       'device',
       'hey moto',
@@ -39,6 +41,17 @@ class IntentParserService {
     return s;
   }
 
+  // "open music player and play people" -> [openApp, playMusic]. Only splits when every part is a
+  // known command, so song titles like "salt and pepper" stay whole.
+  List<ParsedIntent> parseAll(String rawText) {
+    final parts = _normalizePhonetics(rawText).split(RegExp(r'\s+(?:and then|and|then)\s+'));
+    if (parts.length > 1) {
+      final intents = parts.map(parse).toList();
+      if (intents.every((i) => i.type != IntentType.unknown)) return intents;
+    }
+    return [parse(rawText)];
+  }
+
   ParsedIntent parse(String rawText) {
     final text = _normalizePhonetics(rawText);
     if (text.isEmpty) {
@@ -66,8 +79,21 @@ class IntentParserService {
     if (text == 'pause' || text == 'pause music' || text == 'stop music') {
       return ParsedIntent(type: IntentType.pauseMusic, rawQuery: rawText);
     }
-    if (text == 'resume' || text == 'resume music' || text == 'continue') {
+    if (text == 'resume' ||
+        text == 'resume music' ||
+        text == 'continue' ||
+        text == 'unpause') {
       return ParsedIntent(type: IntentType.resumeMusic, rawQuery: rawText);
+    }
+
+    // Open an app: "open music player", "launch spotify", "open the maps app"
+    final openMatch = RegExp(r'^(?:open|launch|start)\s+(?:the\s+)?(.+?)(?:\s+app)?$').firstMatch(text);
+    if (openMatch != null) {
+      return ParsedIntent(
+        type: IntentType.openApp,
+        slots: {'app': openMatch.group(1)!.trim()},
+        rawQuery: rawText,
+      );
     }
 
     // 3. Playback:
@@ -93,8 +119,41 @@ class IntentParserService {
     }
 
     // Case B: General play commands
-    if (text == 'play' || text == 'play music') {
+    if (text == 'play' || text == 'play music' || text == 'play my music') {
       return ParsedIntent(type: IntentType.resumeMusic, rawQuery: rawText);
+    }
+
+    // Case C: play (songs by|music by|some) <artist> -> artist-only playback
+    final artistOnlyMatch = RegExp(
+      r'^play\s+(?:songs\s+by|music\s+by|some\s+songs\s+by|some\s+music\s+by)\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (artistOnlyMatch != null) {
+      final artist = (artistOnlyMatch.group(1) ?? '').trim();
+      if (artist.isNotEmpty) {
+        return ParsedIntent(
+          type: IntentType.playArtist,
+          slots: {'artist': artist},
+          rawQuery: rawText,
+        );
+      }
+    }
+
+    // Case D: play <song> by <artist>
+    final byArtistMatch = RegExp(
+      r'^play\s+(.+?)\s+by\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (byArtistMatch != null) {
+      final song = byArtistMatch.group(1)?.trim() ?? '';
+      final artist = byArtistMatch.group(2)?.trim() ?? '';
+      if (song.isNotEmpty && artist.isNotEmpty) {
+        return ParsedIntent(
+          type: IntentType.playMusic,
+          slots: {'query': song, 'artist': artist},
+          rawQuery: rawText,
+        );
+      }
     }
 
     if (text.startsWith('play ') || text.contains('play ')) {
@@ -109,17 +168,39 @@ class IntentParserService {
     }
 
     // 4. Volume Commands
+    final setVolumeMatch = RegExp(
+      r'^(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*(?:percent|%)?$',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (setVolumeMatch != null) {
+      final value = setVolumeMatch.group(1) ?? '';
+      final clamped = (int.tryParse(value) ?? 0).clamp(0, 100);
+      return ParsedIntent(
+        type: IntentType.setVolume,
+        slots: {'value': '$clamped'},
+        rawQuery: rawText,
+      );
+    }
     if (text.contains('volume up') ||
+        text.contains('turn up the volume') ||
+        text.contains('turn the volume up') ||
         text.contains('increase volume') ||
+        text.contains('increase the volume') ||
         text.contains('louder') ||
         text == 'louder') {
       return ParsedIntent(type: IntentType.volumeUp, rawQuery: rawText);
     }
     if (text.contains('volume down') ||
+        text.contains('turn down the volume') ||
+        text.contains('turn the volume down') ||
         text.contains('decrease volume') ||
+        text.contains('decrease the volume') ||
         text.contains('lower volume') ||
         text == 'quieter') {
       return ParsedIntent(type: IntentType.volumeDown, rawQuery: rawText);
+    }
+    if (text == 'unmute' || text.contains('unmute')) {
+      return ParsedIntent(type: IntentType.volumeUnmute, rawQuery: rawText);
     }
     if (text.contains('mute') || text.contains('silence')) {
       return ParsedIntent(type: IntentType.volumeMute, rawQuery: rawText);
@@ -134,16 +215,21 @@ class IntentParserService {
     final callMatch = RegExp(r'^(?:call|dial|phone)\s+(.+)$', caseSensitive: false).firstMatch(text);
     if (callMatch != null) {
       final target = callMatch.group(1)?.trim() ?? '';
-      return ParsedIntent(
-        type: IntentType.makeCall,
-        slots: {'phone': target},
-        rawQuery: rawText,
-      );
+      if (target.isNotEmpty) {
+        return ParsedIntent(
+          type: IntentType.makeCall,
+          slots: {'phone': target},
+          rawQuery: rawText,
+        );
+      }
     }
 
     // 6. System Status
     if (text.contains('battery')) {
       return ParsedIntent(type: IntentType.batteryStatus, rawQuery: rawText);
+    }
+    if (text.contains('date')) {
+      return ParsedIntent(type: IntentType.dateStatus, rawQuery: rawText);
     }
     if (text.contains('time') || text.contains('clock')) {
       return ParsedIntent(type: IntentType.timeStatus, rawQuery: rawText);

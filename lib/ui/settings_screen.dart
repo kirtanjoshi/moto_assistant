@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../core/constants/app_colors.dart';
 import '../../services/settings_service.dart';
+import '../../services/speech_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -19,11 +21,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
+  double _threshold = SettingsService.defaultWakeThreshold;
+  bool _batteryExempt = false;
+
   Future<void> _loadSettings() async {
     final current = await SettingsService.getSelectedMusicPlayer();
+    final threshold = await SettingsService.getWakeThreshold();
+    final exempt = await Permission.ignoreBatteryOptimizations.isGranted;
+    if (!mounted) return;
     setState(() {
       _selectedPackage = current;
+      _threshold = threshold;
+      _batteryExempt = exempt;
     });
+  }
+
+  Future<void> _applyThreshold(double value) async {
+    await SettingsService.setWakeThreshold(value);
+    try {
+      await MotoVoiceSpeechService.wakeChannel.invokeMethod('setThreshold', {'threshold': value});
+    } catch (_) {}
+  }
+
+  Future<void> _requestBatteryExemption() async {
+    final status = await Permission.ignoreBatteryOptimizations.request();
+    if (mounted) setState(() => _batteryExempt = status.isGranted);
   }
 
   Future<void> _selectPlayer(String packageName) async {
@@ -64,6 +86,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           children: [
+            const Row(
+              children: [
+                Icon(Icons.hearing_rounded, color: AppColors.neonCyan, size: 22),
+                SizedBox(width: 8),
+                Text(
+                  'HEY JARVIS',
+                  style: TextStyle(
+                    color: AppColors.neonCyan,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Wake strictness: ${_threshold.toStringAsFixed(2)}. Raise it if Jarvis wakes by itself '
+              '(wind, engine, music); lower it if it misses you.',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            ),
+            Slider(
+              value: _threshold,
+              min: 0.01,
+              max: 0.9,
+              divisions: 89,
+              label: _threshold.toStringAsFixed(2),
+              activeColor: AppColors.neonCyan,
+              onChanged: (v) => setState(() => _threshold = v),
+              onChangeEnd: _applyThreshold,
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.battery_saver_rounded,
+                color: _batteryExempt ? AppColors.neonGreen : AppColors.neonAmber,
+              ),
+              title: Text(
+                _batteryExempt ? 'Battery optimization: off for MotoVoice' : 'Allow running in background',
+                style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700, fontSize: 14),
+              ),
+              subtitle: const Text(
+                'Stops Samsung/Xiaomi/etc. from killing riding mode after a few minutes.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+              ),
+              onTap: _batteryExempt ? null : _requestBatteryExemption,
+            ),
+            const SizedBox(height: 20),
+
             const Row(
               children: [
                 Icon(Icons.library_music_rounded, color: AppColors.neonCyan, size: 22),

@@ -27,11 +27,24 @@ class _VoiceWaveVisualizerState extends State<VoiceWaveVisualizer> with SingleTi
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
+    );
+    if (widget.isAwake) _controller.repeat(reverse: true);
 
     _scaleAnimation = Tween<double>(begin: 1.0, end: 1.25).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
+  }
+
+  // Running the pulse only while awake stops a 60fps redraw during idle standby.
+  @override
+  void didUpdateWidget(VoiceWaveVisualizer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isAwake == oldWidget.isAwake) return;
+    if (widget.isAwake) {
+      _controller.repeat(reverse: true);
+    } else {
+      _controller.stop();
+    }
   }
 
   @override

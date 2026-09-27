@@ -42,3 +42,7 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    implementation("com.github.msnilsen:openwakeword-android:0.1.2")
+}
