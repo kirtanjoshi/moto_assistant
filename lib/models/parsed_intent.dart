@@ -1,6 +1,7 @@
 enum IntentType {
   playMusic,
   playArtist,
+  shuffleMusic,
   pauseMusic,
   resumeMusic,
   nextTrack,
@@ -36,6 +37,8 @@ class ParsedIntent {
   String? get songOrArtist => slots['query'];
   String? get targetApp => slots['app'];
   String? get phoneNumber => slots['phone'];
+  String? get spokenSim => slots['sim'];
+  String? get contactBeforeSim => slots['contact'];
   int? get volumePercent =>
       slots.containsKey('value') ? int.tryParse(slots['value']!) : null;
 }

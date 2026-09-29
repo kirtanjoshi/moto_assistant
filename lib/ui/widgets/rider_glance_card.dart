@@ -4,6 +4,7 @@ import '../../core/constants/app_colors.dart';
 class RiderGlanceCard extends StatelessWidget {
   final String statusText;
   final String transcript;
+  final String wakePhrase;
   final bool isBluetoothScoOn;
   final VoidCallback onToggleSco;
 
@@ -11,6 +12,7 @@ class RiderGlanceCard extends StatelessWidget {
     super.key,
     required this.statusText,
     required this.transcript,
+    required this.wakePhrase,
     required this.isBluetoothScoOn,
     required this.onToggleSco,
   });
@@ -100,7 +102,7 @@ class RiderGlanceCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            transcript.isNotEmpty ? '"$transcript"' : 'Say "Hey Jarvis", then your command...',
+            transcript.isNotEmpty ? '"$transcript"' : 'Say "$wakePhrase", then your command...',
             style: TextStyle(
               color: transcript.isNotEmpty ? AppColors.neonCyan : AppColors.textSecondary,
               fontSize: 15,

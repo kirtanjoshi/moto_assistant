@@ -14,9 +14,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.speech.SpeechRecognizer
+import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telephony.SubscriptionManager
 import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
@@ -340,12 +343,26 @@ object MotoEngine {
                         }
                     }
                 }
+                "shuffleInPlayer" -> PlayerRemote.shuffle(app, call.argument<String>("package") ?: "") { result.success(it) }
+                "findContacts" -> {
+                    try {
+                        result.success(findContacts(app, call.argument<String>("name") ?: ""))
+                    } catch (ex: SecurityException) {
+                        result.error("NO_CONTACTS_PERMISSION", ex.localizedMessage, null)
+                    }
+                }
                 // TelecomManager.placeCall works with the screen off; startActivity(ACTION_CALL) is blocked from the background.
+                "listSims" -> result.success(simAccounts(app).map { it.second })
                 "makePhoneCall" -> {
                     val phoneNumber = call.argument<String>("phoneNumber") ?: ""
+                    val sim = call.argument<String>("sim")
                     try {
                         val telecom = app.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-                        telecom.placeCall(Uri.parse("tel:$phoneNumber"), Bundle())
+                        // Naming the SIM skips Android's "Choose SIM for this call" pop-up on dual-SIM phones.
+                        val extras = Bundle()
+                        simAccounts(app).firstOrNull { it.second == sim }
+                            ?.let { extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it.first) }
+                        telecom.placeCall(Uri.parse("tel:$phoneNumber"), extras)
                         result.success(true)
                     } catch (ex: Exception) {
                         result.error("CALL_ERROR", ex.localizedMessage, null)
@@ -354,6 +371,50 @@ object MotoEngine {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    // Call-capable SIMs in slot order with their carrier name (e.g. "Namaste", "Ncell"). The name comes from
+    // the SIM subscription: the telecom PhoneAccount label is not the carrier name on every phone (Nothing A059).
+    // A SIM's PhoneAccountHandle id is its subscription id. Empty without READ_PHONE_STATE.
+    private fun simAccounts(app: Context): List<Pair<PhoneAccountHandle, String>> = try {
+        val telecom = app.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+        val subs = app.getSystemService(SubscriptionManager::class.java).activeSubscriptionInfoList.orEmpty()
+        telecom.callCapablePhoneAccounts
+            .mapNotNull { handle ->
+                val sub = subs.firstOrNull { it.subscriptionId.toString() == handle.id } ?: return@mapNotNull null
+                Triple(handle, sub.displayName?.toString() ?: "SIM ${sub.simSlotIndex + 1}", sub.simSlotIndex)
+            }
+            .sortedBy { it.third }
+            .map { it.first to it.second }
+            .also { Log.i("MotoEngine", "SIMs for calls: ${it.map { sim -> sim.second }}") }
+    } catch (ex: SecurityException) {
+        emptyList()
+    }
+
+    // Best contacts for a spoken name, highest score first. Scores the whole name and each word of it,
+    // so "call John" finds "John Smith" and speech-to-text slips like "Jon" still match.
+    private fun findContacts(app: Context, spoken: String): List<Map<String, Any>> {
+        val query = spoken.trim().lowercase()
+        if (query.isEmpty()) return emptyList()
+        val best = mutableMapOf<String, Pair<String, Double>>() // display name -> (number, score)
+        app.contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
+            null, null, null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(0) ?: continue
+                val number = c.getString(1) ?: continue
+                val lower = name.lowercase()
+                val score = if (lower == query) 1.0
+                    else maxOf(similarity(query, lower), lower.split(' ').maxOf { similarity(query, it) } - 0.05)
+                if (score >= 0.6 && score > (best[name]?.second ?: 0.0)) best[name] = number to score
+            }
+        }
+        // An exact name ("Daddy") beats contacts that merely contain it ("sudi ko daddy", "T V DADDY EXT").
+        val exact = best.filterValues { it.second == 1.0 }
+        return (exact.ifEmpty { best }).entries.sortedByDescending { it.value.second }.take(3)
+            .map { mapOf("name" to it.key, "number" to it.value.first, "score" to it.value.second) }
     }
 
     private fun similarity(s1: String, s2: String): Double {

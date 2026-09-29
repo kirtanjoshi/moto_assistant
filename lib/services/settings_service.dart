@@ -80,6 +80,9 @@ class SettingsService {
   // Sherpa: 0.25 is the library's own default trigger threshold.
   static double defaultWakeThreshold(String engine) => engine == 'oww' ? 0.025 : 0.25;
 
+  // openWakeWord only ships a "Hey Jarvis" model; "Hey Moto" is the phrase the rider's voice reliably triggers on Sherpa.
+  static String wakePhrase(String engine) => engine == 'oww' ? 'Hey Jarvis' : 'Hey Moto';
+
   static Future<String> getWakeEngine() async =>
       (await SharedPreferences.getInstance()).getString(_keyWakeEngine) ?? defaultWakeEngine;
 
@@ -92,6 +95,17 @@ class SettingsService {
 
   static Future<void> setWakeThreshold(String engine, double value) async =>
       (await SharedPreferences.getInstance()).setDouble('pref_wake_threshold_$engine', value);
+
+  static const String _keyCallingSim = 'pref_calling_sim';
+
+  /// SIM label used for voice calls ("Ncell"), or null to let Android decide / ask.
+  static Future<String?> getCallingSim() async =>
+      (await SharedPreferences.getInstance()).getString(_keyCallingSim);
+
+  static Future<void> setCallingSim(String? sim) async {
+    final prefs = await SharedPreferences.getInstance();
+    sim == null ? await prefs.remove(_keyCallingSim) : await prefs.setString(_keyCallingSim, sim);
+  }
 
   static Future<bool> getRidingMode() async =>
       (await SharedPreferences.getInstance()).getBool(_keyRidingMode) ?? true;

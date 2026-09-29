@@ -73,6 +73,16 @@ class IntentParserService {
       return ParsedIntent(type: IntentType.cancel, rawQuery: rawText);
     }
 
+    // Shuffle the phone's songs: "shuffle", "play any song in this shuffle", "play some music", "play random songs".
+    // Checked before the play cases, which would otherwise search for a song literally named "some music".
+    if (RegExp(r'\bshuffl(?:e|ing)\b').hasMatch(text) ||
+        RegExp(r'^(?:play|put on)\s+(?:me\s+)?(?:any|some|a|random|a random|any random)\s+(?:random\s+)?'
+                r'(?:song|songs|music|track|tracks)(?:\s+for me)?$')
+            .hasMatch(text) ||
+        RegExp(r'^(?:random|any)\s+(?:song|songs|music)$').hasMatch(text)) {
+      return ParsedIntent(type: IntentType.shuffleMusic, rawQuery: rawText);
+    }
+
     // 2. Track controls
     if (text.contains('next') || text.contains('skip')) {
       return ParsedIntent(type: IntentType.nextTrack, rawQuery: rawText);
@@ -216,13 +226,23 @@ class IntentParserService {
     }
 
     // 5. Calling Commands: call / dial <number / contact>
-    final callMatch = RegExp(r'^(?:call|dial|phone)\s+(.+)$', caseSensitive: false).firstMatch(text);
+    final callMatch = RegExp(
+      r'^(?:make\s+a\s+(?:phone\s+)?call\s+to|call|dial|phone|ring)\s+(?:to\s+)?(?:my\s+)?(.+?)(?:\s+(?:please|now))?$',
+    ).firstMatch(text);
     if (callMatch != null) {
       final target = callMatch.group(1)?.trim() ?? '';
       if (target.isNotEmpty) {
+        // "daddy on ncell" / "daddy from sim 2": the tail may name a SIM. Kept alongside the full target,
+        // because a tail that matches no SIM is part of the name ("ram on mobile").
+        final simTail = RegExp(r'^(.+?)\s+(?:on|from|using|with|via|through)\s+(?:my\s+|the\s+)?(.+)$')
+            .firstMatch(target);
         return ParsedIntent(
           type: IntentType.makeCall,
-          slots: {'phone': target},
+          slots: {
+            'phone': target,
+            if (simTail != null) 'contact': simTail.group(1)!,
+            if (simTail != null) 'sim': simTail.group(2)!,
+          },
           rawQuery: rawText,
         );
       }

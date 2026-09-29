@@ -8,6 +8,7 @@ import '../services/audio_feedback_service.dart';
 import '../services/intercom_audio_service.dart';
 import '../services/intent_parser_service.dart';
 import '../services/media_intent_service.dart';
+import '../services/settings_service.dart';
 import '../services/speech_service.dart';
 import '../services/system_status_service.dart';
 import 'widgets/quick_action_card.dart';
@@ -47,8 +48,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     try {
       await _audioService.stopBluetoothSco();
-      // Audio/storage to find song files; phone so voice calls can be placed with the screen off
-      await [Permission.audio, Permission.storage, Permission.phone].request();
+      // Audio/storage to find song files; phone so voice calls can be placed with the screen off;
+      // contacts so "call <name>" can find the number.
+      await [Permission.audio, Permission.storage, Permission.phone, Permission.contacts].request();
     } catch (_) {}
     _isScoActive = false;
 
@@ -87,7 +89,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         break;
 
       case IntentType.help:
-        _feedbackService.speak('You can say play song, next, volume up, or call');
+        _feedbackService.speak('You can say play a song, shuffle, next, volume up, or call someone');
         break;
 
       case IntentType.cancel:
@@ -104,6 +106,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final artist = intent.slots['artist'] ?? '';
         _feedbackService.speak('Playing $artist');
         await _mediaService.playMedia(query: artist);
+        break;
+
+      case IntentType.shuffleMusic:
+        _feedbackService.speak(
+          await _mediaService.shuffle() ? 'Shuffling your songs' : 'Unable to play shuffle in your music player',
+        );
         break;
 
       case IntentType.nextTrack:
@@ -154,9 +162,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         break;
 
       case IntentType.makeCall:
-        final target = intent.phoneNumber ?? '';
-        _feedbackService.speak('Calling $target');
-        await _mediaService.makePhoneCall(target);
+        await _callByNumberOrName(intent);
         break;
 
       case IntentType.openApp:
@@ -189,6 +195,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _feedbackService.speak('Sorry, I didn\'t understand.');
         break;
     }
+  }
+
+  Future<void> _callByNumberOrName(ParsedIntent intent) async {
+    // SIM: one named in the command ("on Ncell") wins, then the Calling SIM from Settings, else Android asks.
+    final sims = await _mediaService.listSims();
+    var target = intent.phoneNumber ?? '';
+    String? sim;
+    final spokenSim = intent.spokenSim;
+    final simIndex = spokenSim == null ? null : MediaIntentService.matchSim(spokenSim, sims);
+    if (simIndex != null) {
+      sim = sims[simIndex];
+      target = intent.contactBeforeSim!;
+    } else {
+      final saved = await SettingsService.getCallingSim();
+      if (sims.contains(saved)) sim = saved;
+    }
+    final onSim = sim == null ? '' : ' on $sim';
+
+    final digits = target.replaceAll(RegExp(r'[\s\-()]'), '');
+    if (RegExp(r'^\+?\d{3,}$').hasMatch(digits)) {
+      _feedbackService.speak('Calling ${digits.split('').join(' ')}$onSim');
+      await _mediaService.makePhoneCall(digits, sim: sim);
+      return;
+    }
+
+    final matches = await _mediaService.findContacts(target);
+    if (matches == null) {
+      _feedbackService.speak('Please allow contacts access so I can call people by name');
+      return;
+    }
+    if (matches.isEmpty) {
+      _feedbackService.speak('I could not find $target in your contacts');
+      return;
+    }
+    // Two different people scoring about the same (e.g. "John Smith" and "John Doe" for "John"): ask, don't guess.
+    if (matches.length > 1 && matches[1].score >= matches[0].score - 0.05) {
+      _feedbackService.speak(
+        'I found ${matches[0].name} and ${matches[1].name}. Say call, and the full name.',
+      );
+      return;
+    }
+    final contact = matches.first;
+    _feedbackService.speak('Calling ${contact.name}$onSim');
+    // Let the announcement finish before the call takes over the audio.
+    await Future.delayed(const Duration(milliseconds: 1500));
+    await _mediaService.makePhoneCall(contact.number, sim: sim);
   }
 
   Future<void> _toggleBluetoothSco() async {
@@ -289,6 +341,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       return RiderGlanceCard(
                         statusText: status,
                         transcript: heard,
+                        wakePhrase: MotoVoiceSpeechService.wakePhraseNotifier.value,
                         isBluetoothScoOn: _isScoActive,
                         onToggleSco: _toggleBluetoothSco,
                       );
@@ -319,9 +372,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         letterSpacing: 1.1,
                       ),
                     ),
-                    subtitle: Text(
-                      on ? '"Hey Jarvis" works with screen off' : 'Off - no background battery use',
-                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                    subtitle: ValueListenableBuilder<String>(
+                      valueListenable: MotoVoiceSpeechService.wakePhraseNotifier,
+                      builder: (context, phrase, _) => Text(
+                        on ? '"$phrase" works with screen off' : 'Off - no background battery use',
+                        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                      ),
                     ),
                   );
                 },

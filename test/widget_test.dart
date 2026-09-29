@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:moto_assistant/models/parsed_intent.dart';
 import 'package:moto_assistant/services/intent_parser_service.dart';
+import 'package:moto_assistant/services/media_intent_service.dart';
 import 'package:moto_assistant/ui/widgets/voice_wave_visualizer.dart';
 
 void main() {
@@ -118,6 +119,56 @@ void main() {
       final t = parser.parse('call John');
       expect(t.type, IntentType.makeCall);
       expect(t.phoneNumber, 'john');
+    });
+
+    test('Calls: filler words are stripped from the contact name', () {
+      expect(parser.parse('call my mom').phoneNumber, 'mom');
+      expect(parser.parse('call to ram please').phoneNumber, 'ram');
+      expect(parser.parse('make a call to john smith').phoneNumber, 'john smith');
+      expect(parser.parse('dial 98765 43210').phoneNumber, '98765 43210');
+    });
+
+    test('Calls: SIM named in the command', () {
+      final t = parser.parse('call daddy on ncell');
+      expect(t.phoneNumber, 'daddy on ncell');
+      expect(t.contactBeforeSim, 'daddy');
+      expect(t.spokenSim, 'ncell');
+      expect(parser.parse('call daddy from sim 2').spokenSim, 'sim 2');
+      expect(parser.parse('call daddy').spokenSim, isNull);
+    });
+
+    test('Calls: spoken SIM matches the phone SIM labels', () {
+      const sims = ['Namaste', 'Ncell'];
+      expect(MediaIntentService.matchSim('ncell', sims), 1);
+      expect(MediaIntentService.matchSim('n cell', sims), 1);
+      expect(MediaIntentService.matchSim('namaste sim', sims), 0);
+      expect(MediaIntentService.matchSim('sim 2', sims), 1);
+      expect(MediaIntentService.matchSim('first sim', sims), 0);
+      expect(MediaIntentService.matchSim('sim 3', sims), isNull);
+      // Not a SIM -> the caller keeps "ram on mobile" as the contact name.
+      expect(MediaIntentService.matchSim('mobile', sims), isNull);
+    });
+
+    test('Shuffle: phone songs in random order', () {
+      for (final phrase in [
+        'shuffle',
+        'shuffle my songs',
+        'play some music',
+        'play any song',
+        'play random songs',
+        'play any song in this shuffle',
+      ]) {
+        expect(parser.parse(phrase).type, IntentType.shuffleMusic, reason: phrase);
+      }
+      // Still regular playback, not shuffle:
+      expect(parser.parse('play music').type, IntentType.resumeMusic);
+      expect(parser.parse('play a song by arijit').type, IntentType.playMusic);
+      expect(parser.parse('play believer').type, IntentType.playMusic);
+    });
+
+    test('Shuffle: works chained after opening the player', () {
+      final intents = parser.parseAll('open music player and play any song in this shuffle');
+      expect(intents.map((i) => i.type), [IntentType.openApp, IntentType.shuffleMusic]);
     });
 
     test('System: time, date, battery queries', () {

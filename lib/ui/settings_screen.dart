@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../core/constants/app_colors.dart';
+import '../../services/media_intent_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/speech_service.dart';
 
@@ -24,19 +25,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _engine = SettingsService.defaultWakeEngine;
   double _threshold = SettingsService.defaultWakeThreshold(SettingsService.defaultWakeEngine);
   bool _batteryExempt = false;
+  List<String> _sims = [];
+  String? _callingSim;
 
   Future<void> _loadSettings() async {
     final current = await SettingsService.getSelectedMusicPlayer();
     final engine = await SettingsService.getWakeEngine();
     final threshold = await SettingsService.getWakeThreshold(engine);
     final exempt = await Permission.ignoreBatteryOptimizations.isGranted;
+    final sims = await MediaIntentService().listSims();
+    final callingSim = await SettingsService.getCallingSim();
     if (!mounted) return;
     setState(() {
       _selectedPackage = current;
       _engine = engine;
       _threshold = threshold;
       _batteryExempt = exempt;
+      _sims = sims;
+      _callingSim = sims.contains(callingSim) ? callingSim : null;
     });
+  }
+
+  Future<void> _selectCallingSim(String? sim) async {
+    setState(() => _callingSim = sim);
+    await SettingsService.setCallingSim(sim);
   }
 
   Future<void> _selectEngine(String engine) async {
@@ -170,6 +182,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               onTap: _batteryExempt ? null : _requestBatteryExemption,
             ),
+            const SizedBox(height: 20),
+
+            const Row(
+              children: [
+                Icon(Icons.sim_card_rounded, color: AppColors.neonCyan, size: 22),
+                SizedBox(width: 8),
+                Text(
+                  'CALLING SIM',
+                  style: TextStyle(
+                    color: AppColors.neonCyan,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _sims.isEmpty
+                  ? 'Allow the Phone permission to choose which SIM voice calls use.'
+                  : 'SIM for voice calls, so no "Choose SIM" pop-up appears while riding. '
+                      'You can still say "call Daddy on ${_sims.last}".',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            ),
+            if (_sims.isNotEmpty)
+              RadioGroup<String?>(
+                groupValue: _callingSim,
+                onChanged: _selectCallingSim,
+                child: Column(
+                  children: [
+                    for (final sim in <String?>[null, ..._sims])
+                      RadioListTile<String?>(
+                        contentPadding: EdgeInsets.zero,
+                        value: sim,
+                        activeColor: AppColors.neonCyan,
+                        title: Text(
+                          sim ?? 'Ask every time (phone default)',
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 20),
 
             const Row(

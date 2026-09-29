@@ -62,7 +62,7 @@ class WakeWordService : Service() {
     private fun buildNotification(): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Hey Jarvis listening", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Wake word listening", NotificationManager.IMPORTANCE_LOW)
         )
         val openApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
@@ -73,7 +73,7 @@ class WakeWordService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("MotoVoice riding mode")
-            .setContentText("Listening for \"Hey Jarvis\"")
+            .setContentText("Listening for your wake word")
             .setOngoing(true)
             .setContentIntent(openApp)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())

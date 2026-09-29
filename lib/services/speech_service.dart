@@ -39,8 +39,11 @@ class MotoVoiceSpeechService {
   final ValueNotifier<bool> ridingModeNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<bool> onDeviceSttNotifier = ValueNotifier<bool>(false);
 
+  static final ValueNotifier<String> wakePhraseNotifier =
+      ValueNotifier<String>(SettingsService.wakePhrase(SettingsService.defaultWakeEngine));
+
   String get _standbyStatus =>
-      ridingModeNotifier.value ? 'Listening for Hey Jarvis' : 'Riding mode off - tap mic';
+      ridingModeNotifier.value ? 'Listening for ${wakePhraseNotifier.value}' : 'Riding mode off - tap mic';
 
   VoidCallback? onWakeWord;
   Future<void> Function(String command)? onCommand;
@@ -104,6 +107,10 @@ class MotoVoiceSpeechService {
       } catch (_) {}
 
       // Mic permission is granted by now, so the native detector can actually open the mic.
+      // Engine switched in Settings -> the idle status names the new phrase right away.
+      wakePhraseNotifier.addListener(() {
+        if (_state == VoiceLoopState.wakeWordListening) statusNotifier.value = _standbyStatus;
+      });
       await applyWakeSettings();
       await setRidingMode(await SettingsService.getRidingMode(), persist: false);
       _updateState(VoiceLoopState.wakeWordListening, _standbyStatus);
@@ -118,6 +125,7 @@ class MotoVoiceSpeechService {
 
   static Future<void> applyWakeSettings() async {
     final engine = await SettingsService.getWakeEngine();
+    wakePhraseNotifier.value = SettingsService.wakePhrase(engine);
     await wakeChannel.invokeMethod('setEngine', {'engine': engine});
     await wakeChannel.invokeMethod('setThreshold', {'threshold': await SettingsService.getWakeThreshold(engine)});
   }
@@ -205,6 +213,10 @@ class MotoVoiceSpeechService {
         onResult: _onSpeechResult,
         listenOptions: stt.SpeechListenOptions(
           listenMode: stt.ListenMode.confirmation,
+          // Riders pause mid-command ("call daddy ... on Ncell"); Android otherwise ends listening after
+          // ~1 s of silence and drops everything said after the pause.
+          pauseFor: const Duration(milliseconds: 2500),
+          listenFor: const Duration(seconds: 20),
           cancelOnError: false,
           partialResults: true,
           // The plugin falls back to the normal (online) recognizer when no offline model is installed.
@@ -223,9 +235,22 @@ class MotoVoiceSpeechService {
   void _armCommandTimer() {
     _commandTimer?.cancel();
     _commandTimer = Timer(_commandTimeout, () {
-      print('[MotoVoice State] Command listening timeout expired with no speech.');
-      _recoverToWakeWordStandby();
+      print('[MotoVoice State] Command listening timeout expired.');
+      _runHeardOrGiveUp();
     });
+  }
+
+  // The recognizer can stop without ever sending a final result (or send it too late); the words
+  // already heard are the command, so run them rather than drop them.
+  void _runHeardOrGiveUp() {
+    if (_state != VoiceLoopState.commandListening) return;
+    final heard = partialTextNotifier.value.trim();
+    if (heard.isNotEmpty) {
+      print('[MotoVoice State] No final result - running last heard words: "$heard"');
+      _processAndExecuteCommand(heard.toLowerCase());
+    } else {
+      _recoverToWakeWordStandby();
+    }
   }
 
   void _onSpeechResult(SpeechRecognitionResult result) {
@@ -285,12 +310,8 @@ class MotoVoiceSpeechService {
 
     if (status == 'notListening' || status == 'done') {
       if (_state == VoiceLoopState.commandListening) {
-        // If STT stopped with no final result, trigger recovery
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (_state == VoiceLoopState.commandListening) {
-            _recoverToWakeWordStandby();
-          }
-        });
+        // With the long pause setting the final result can arrive ~2 s after listening stops.
+        Future.delayed(const Duration(milliseconds: 2500), _runHeardOrGiveUp);
       }
     }
   }

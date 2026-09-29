@@ -16,6 +16,8 @@
     
     <!-- Hands-Free Phone Call & Contacts Permissions -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Lists the SIMs so a call can go out on a chosen SIM without the "Choose SIM" pop-up -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     
     <!-- System & Wake Lock for Rider Display -->
