@@ -64,17 +64,34 @@ class SettingsService {
     } catch (_) {}
   }
 
-  static const String _keyWakeThreshold = 'pref_wake_threshold';
   static const String _keyRidingMode = 'pref_riding_mode';
-  // Rider's own tuned value: on the Nothing A059 real "Hey Jarvis" scores ranged 0.06-0.26, never near 0.5.
-  // ponytail: one global value; a per-voice verifier model is the upgrade if false wakes become a problem.
-  static const double defaultWakeThreshold = 0.025;
+  static const String _keyWakeEngine = 'pref_wake_engine';
 
-  static Future<double> getWakeThreshold() async =>
-      (await SharedPreferences.getInstance()).getDouble(_keyWakeThreshold) ?? defaultWakeThreshold;
+  // openWakeWord is the default: it is the only engine that has detected the rider's voice on the phone.
+  // Sherpa never fired on-device (models work offline on PC) — kept as experimental until that is solved.
+  static const String defaultWakeEngine = 'oww';
+  static const Map<String, String> wakeEngines = {
+    'oww': 'openWakeWord (recommended)',
+    'sherpa_phone': 'Sherpa - phonemes (experimental)',
+    'sherpa_giga': 'Sherpa - GigaSpeech (experimental)',
+  };
 
-  static Future<void> setWakeThreshold(double value) async =>
-      (await SharedPreferences.getInstance()).setDouble(_keyWakeThreshold, value);
+  // openWakeWord: real "Hey Jarvis" scored 0.03-0.26 on the Nothing A059, never near its 0.5 default.
+  // Sherpa: 0.25 is the library's own default trigger threshold.
+  static double defaultWakeThreshold(String engine) => engine == 'oww' ? 0.025 : 0.25;
+
+  static Future<String> getWakeEngine() async =>
+      (await SharedPreferences.getInstance()).getString(_keyWakeEngine) ?? defaultWakeEngine;
+
+  static Future<void> setWakeEngine(String engine) async =>
+      (await SharedPreferences.getInstance()).setString(_keyWakeEngine, engine);
+
+  static Future<double> getWakeThreshold(String engine) async =>
+      (await SharedPreferences.getInstance()).getDouble('pref_wake_threshold_$engine') ??
+      defaultWakeThreshold(engine);
+
+  static Future<void> setWakeThreshold(String engine, double value) async =>
+      (await SharedPreferences.getInstance()).setDouble('pref_wake_threshold_$engine', value);
 
   static Future<bool> getRidingMode() async =>
       (await SharedPreferences.getInstance()).getBool(_keyRidingMode) ?? true;

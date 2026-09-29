@@ -7,7 +7,11 @@ class IntentParserService {
     // Strip leading wake words if the whole utterance was captured
     final wakeWords = [
       'hey jarvis',
+      'oi jarvis',
+      'oy jarvis',
       'jarvis',
+      'oi moto',
+      'oy moto',
       'hey device',
       'device',
       'hey moto',

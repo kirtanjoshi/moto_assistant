@@ -3,16 +3,16 @@ package com.motovoice.moto_assistant.wakeword
 import android.content.Context
 import android.util.Log
 
-class WakeWordDetector(
+class OpenWakeWordDetector(
     private val context: Context,
-    private val onDetected: (score: Float) -> Unit,
-) {
+    private val onDetected: (score: Float, keyword: String) -> Unit,
+) : WakeDetector {
     private var detector: OpenWakeWord? = null
-    private var threshold = 0.5f
-    var isListening = false
+    private var threshold = 0.025f
+    override var isListening = false
         private set
 
-    fun start() {
+    override fun start() {
         if (isListening) return
         val d = detector ?: OpenWakeWord.Builder(context)
             .setModel(OpenWakeWord.BuiltInModel.HEY_JARVIS)
@@ -24,29 +24,34 @@ class WakeWordDetector(
         d.start { score ->
             Log.i(TAG, "Wake word detected, score=$score")
             pause()
-            onDetected(score)
+            onDetected(score, "HEY_JARVIS")
         }
         isListening = true
     }
 
     // Keeps the ONNX models loaded so resuming is cheap.
-    fun pause() {
+    override fun pause() {
         if (!isListening) return
         detector?.stop()
         isListening = false
     }
 
     // The library bakes the threshold in at build time, so a change needs a rebuild.
-    fun setThreshold(value: Float) {
+    override fun setThreshold(value: Float) {
+        if (value == threshold) return
         val wasListening = isListening
-        detector?.release()
-        detector = null
-        isListening = false
+        release()
         threshold = value
         if (wasListening) start()
     }
 
+    override fun release() {
+        detector?.release()
+        detector = null
+        isListening = false
+    }
+
     companion object {
-        private const val TAG = "WakeWordDetector"
+        private const val TAG = "OpenWakeWordDetector"
     }
 }

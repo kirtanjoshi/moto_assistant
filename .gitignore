@@ -56,3 +56,6 @@ assets/models/*.zip
 android/build/
 build/
 **/build/
+
+# Sherpa-ONNX AAR/model download cache (fetched by android/app/build.gradle.kts)
+android/.sherpa/

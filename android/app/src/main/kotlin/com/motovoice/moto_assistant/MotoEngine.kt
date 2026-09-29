@@ -5,6 +5,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -16,8 +17,13 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.speech.SpeechRecognizer
 import android.telecom.TelecomManager
+import android.util.Log
 import android.view.KeyEvent
-import com.motovoice.moto_assistant.wakeword.WakeWordDetector
+import androidx.core.content.ContextCompat
+import com.motovoice.moto_assistant.wakeword.MicRoute
+import com.motovoice.moto_assistant.wakeword.OpenWakeWordDetector
+import com.motovoice.moto_assistant.wakeword.SherpaWakeDetector
+import com.motovoice.moto_assistant.wakeword.WakeDetector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.max
@@ -35,21 +41,35 @@ object MotoEngine {
     private var focusRequest: AudioFocusRequest? = null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
 
-    var detector: WakeWordDetector? = null
+    var detector: WakeDetector? = null
         private set
+    private var detectorEngine = DEFAULT_ENGINE
+
+    // Must match SettingsService.defaultWakeEngine on the Dart side.
+    private const val DEFAULT_ENGINE = "oww"
 
     fun get(context: Context): FlutterEngine {
         engine?.let { return it }
         val app = context.applicationContext
         val e = FlutterEngine(app)
-        detector = WakeWordDetector(app) { score ->
-            wakeChannel?.invokeMethod("onWakeWordDetected", mapOf("score" to score))
-        }
+        detector = createDetector(app, DEFAULT_ENGINE)
         registerWakeChannel(app, e)
         registerAudioChannel(app, e)
         registerMediaChannel(app, e)
         engine = e
         return e
+    }
+
+    private fun createDetector(app: Context, engineName: String): WakeDetector {
+        val onDetected = { score: Float, keyword: String ->
+            wakeChannel?.invokeMethod("onWakeWordDetected", mapOf("score" to score, "keyword" to keyword))
+            Unit
+        }
+        return when (engineName) {
+            "sherpa_phone" -> SherpaWakeDetector(app, "phone", onDetected)
+            "sherpa_giga" -> SherpaWakeDetector(app, "giga", onDetected)
+            else -> OpenWakeWordDetector(app, onDetected)
+        }
     }
 
     fun notifyRidingMode(enabled: Boolean) {
@@ -80,7 +100,20 @@ object MotoEngine {
                         result.success(true)
                     }
                     "setThreshold" -> {
-                        detector?.setThreshold(call.argument<Double>("threshold")?.toFloat() ?: 0.5f)
+                        detector?.setThreshold(call.argument<Double>("threshold")?.toFloat() ?: 0.25f)
+                        result.success(true)
+                    }
+                    // Dart sends setEngine then setThreshold, so the new detector gets that engine's threshold.
+                    // Dart calls this on every app open; only swap (and reload models) when the engine changed.
+                    "setEngine" -> {
+                        val name = call.argument<String>("engine") ?: DEFAULT_ENGINE
+                        if (name != detectorEngine) {
+                            val wasListening = detector?.isListening == true
+                            detector?.release()
+                            detector = createDetector(app, name)
+                            detectorEngine = name
+                            if (wasListening) detector?.start()
+                        }
                         result.success(true)
                     }
                     else -> result.notImplemented()
@@ -91,20 +124,37 @@ object MotoEngine {
 
     private fun registerAudioChannel(app: Context, e: FlutterEngine) {
         val audioManager = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.isBluetoothScoOn = false
+        audioManager.clearCommunicationDevice()
         audioManager.mode = AudioManager.MODE_NORMAL
+
+        // The SCO link comes up asynchronously after setCommunicationDevice, so the wake-word mic is switched
+        // here, when Android reports the change (also covers the helmet disconnecting on its own).
+        audioManager.addOnCommunicationDeviceChangedListener(ContextCompat.getMainExecutor(app)) { device ->
+            MicRoute.helmetMic = if (device?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+            } else null
+            Log.i("MotoEngine", "Communication device -> ${device?.productName}; helmet mic=${MicRoute.helmetMic != null}")
+            detector?.let {
+                if (it.isListening) {
+                    it.pause()
+                    it.start()
+                }
+            }
+        }
 
         MethodChannel(e.dartExecutor.binaryMessenger, AUDIO_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
+                // Intercom mode: route voice (wake word + commands) through the helmet's Bluetooth mic.
                 "startBluetoothSco" -> {
                     try {
-                        if (audioManager.isBluetoothScoAvailableOffCall) {
-                            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                            audioManager.startBluetoothSco()
-                            audioManager.isBluetoothScoOn = true
-                            result.success(true)
-                        } else {
+                        val sco = audioManager.availableCommunicationDevices
+                            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+                        if (sco == null) {
                             result.success(false)
+                        } else {
+                            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                            result.success(audioManager.setCommunicationDevice(sco))
                         }
                     } catch (ex: Exception) {
                         result.error("SCO_ERROR", ex.localizedMessage, null)
@@ -112,15 +162,16 @@ object MotoEngine {
                 }
                 "stopBluetoothSco", "resetToNormal" -> {
                     try {
-                        audioManager.stopBluetoothSco()
-                        audioManager.isBluetoothScoOn = false
+                        audioManager.clearCommunicationDevice()
                         audioManager.mode = AudioManager.MODE_NORMAL
                         result.success(true)
                     } catch (ex: Exception) {
                         result.error("SCO_ERROR", ex.localizedMessage, null)
                     }
                 }
-                "isBluetoothScoOn" -> result.success(audioManager.isBluetoothScoOn)
+                "isBluetoothScoOn" -> result.success(
+                    audioManager.communicationDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                )
                 "adjustVolume" -> {
                     val direction = call.argument<String>("direction") ?: "up"
                     val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)

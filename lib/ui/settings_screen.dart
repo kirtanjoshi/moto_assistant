@@ -21,23 +21,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
-  double _threshold = SettingsService.defaultWakeThreshold;
+  String _engine = SettingsService.defaultWakeEngine;
+  double _threshold = SettingsService.defaultWakeThreshold(SettingsService.defaultWakeEngine);
   bool _batteryExempt = false;
 
   Future<void> _loadSettings() async {
     final current = await SettingsService.getSelectedMusicPlayer();
-    final threshold = await SettingsService.getWakeThreshold();
+    final engine = await SettingsService.getWakeEngine();
+    final threshold = await SettingsService.getWakeThreshold(engine);
     final exempt = await Permission.ignoreBatteryOptimizations.isGranted;
     if (!mounted) return;
     setState(() {
       _selectedPackage = current;
+      _engine = engine;
       _threshold = threshold;
       _batteryExempt = exempt;
     });
   }
 
+  Future<void> _selectEngine(String engine) async {
+    await SettingsService.setWakeEngine(engine);
+    final threshold = await SettingsService.getWakeThreshold(engine);
+    if (mounted) {
+      setState(() {
+        _engine = engine;
+        _threshold = threshold;
+      });
+    }
+    try {
+      await MotoVoiceSpeechService.applyWakeSettings();
+    } catch (_) {}
+  }
+
   Future<void> _applyThreshold(double value) async {
-    await SettingsService.setWakeThreshold(value);
+    await SettingsService.setWakeThreshold(_engine, value);
     try {
       await MotoVoiceSpeechService.wakeChannel.invokeMethod('setThreshold', {'threshold': value});
     } catch (_) {}
@@ -102,6 +119,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
             const SizedBox(height: 6),
+            const Text(
+              'Wake phrases: Hey Jarvis, Oi Jarvis, Jarvis, Hey Moto, Oi Moto (Sherpa engines).',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            ),
+            // Temporary A/B switch: compare engines on the rider's voice, then keep one.
+            RadioGroup<String>(
+              groupValue: _engine,
+              onChanged: (v) => _selectEngine(v!),
+              child: Column(
+                children: SettingsService.wakeEngines.entries
+                    .map((e) => RadioListTile<String>(
+                          value: e.key,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          activeColor: AppColors.neonCyan,
+                          title: Text(e.value, style: const TextStyle(color: AppColors.textPrimary, fontSize: 14)),
+                        ))
+                    .toList(),
+              ),
+            ),
             Text(
               'Wake strictness: ${_threshold.toStringAsFixed(2)}. Raise it if Jarvis wakes by itself '
               '(wind, engine, music); lower it if it misses you.',

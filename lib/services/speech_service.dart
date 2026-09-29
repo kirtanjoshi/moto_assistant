@@ -72,9 +72,11 @@ class MotoVoiceSpeechService {
     // Register native wake-word bridge handler
     wakeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onWakeWordDetected') {
-        final score = call.arguments?['score'] ?? 0.0;
-        print('[MotoVoice State] Native Wake Event | score: $score | currentState: $_state');
-        _handleWakeWordTrigger(score: (score as num).toDouble());
+        final score = (call.arguments?['score'] as num? ?? 0).toDouble();
+        final keyword = call.arguments?['keyword'] as String? ?? '';
+        print('[MotoVoice State] Native Wake Event | $keyword score: $score | currentState: $_state');
+        // Sherpa reports which phrase fired (score is always 1); openWakeWord reports a real score.
+        _handleWakeWordTrigger(heard: score < 1 ? '$keyword ${score.toStringAsFixed(2)}' : keyword);
       } else if (call.method == 'onRidingModeChanged') {
         ridingModeNotifier.value = call.arguments == true;
         if (_state == VoiceLoopState.wakeWordListening) statusNotifier.value = _standbyStatus;
@@ -102,7 +104,7 @@ class MotoVoiceSpeechService {
       } catch (_) {}
 
       // Mic permission is granted by now, so the native detector can actually open the mic.
-      await wakeChannel.invokeMethod('setThreshold', {'threshold': await SettingsService.getWakeThreshold()});
+      await applyWakeSettings();
       await setRidingMode(await SettingsService.getRidingMode(), persist: false);
       _updateState(VoiceLoopState.wakeWordListening, _standbyStatus);
       return true;
@@ -112,6 +114,12 @@ class MotoVoiceSpeechService {
       onError?.call('Init Error: $e');
       return false;
     }
+  }
+
+  static Future<void> applyWakeSettings() async {
+    final engine = await SettingsService.getWakeEngine();
+    await wakeChannel.invokeMethod('setEngine', {'engine': engine});
+    await wakeChannel.invokeMethod('setThreshold', {'threshold': await SettingsService.getWakeThreshold(engine)});
   }
 
   // Riding mode = foreground service keeping "Hey Jarvis" alive with the screen off. Off = zero background cost.
@@ -147,7 +155,7 @@ class MotoVoiceSpeechService {
   // 1. Wake word detected or manual mic button tapped
   void manualWake() => _handleWakeWordTrigger();
 
-  Future<void> _handleWakeWordTrigger({double? score}) async {
+  Future<void> _handleWakeWordTrigger({String? heard}) async {
     if (_isDisposed) return;
 
     // Duplicate-trigger protection
@@ -162,10 +170,10 @@ class MotoVoiceSpeechService {
     }
 
     print('[MotoVoice State] ---> WAKE TRIGGERED: Releasing wake detector & starting STT');
-    // Showing the score lets the rider calibrate the threshold slider against their own voice/mic.
+    // Showing which phrase fired (and its score) helps calibrate the slider against the rider's voice/mic.
     _updateState(
       VoiceLoopState.commandListening,
-      score == null ? 'Listening...' : 'Listening... (wake score ${score.toStringAsFixed(2)})',
+      heard == null ? 'Listening...' : 'Listening... ($heard)',
     );
     partialTextNotifier.value = '';
     liveHeardNotifier.value = '';

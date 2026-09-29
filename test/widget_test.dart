@@ -132,6 +132,9 @@ void main() {
       expect(t.targetApp, 'music player');
       expect(parser.parse('launch the spotify app').targetApp, 'spotify');
       expect(parser.parse('jarvis open whatsapp').targetApp, 'whatsapp');
+      expect(parser.parse('oi jarvis next song').type, IntentType.nextTrack);
+      expect(parser.parse('oi moto volume up').type, IntentType.volumeUp);
+      expect(parser.parse('hey moto pause').type, IntentType.pauseMusic);
     });
 
     test('Compound commands split on and/then, song titles stay whole', () {

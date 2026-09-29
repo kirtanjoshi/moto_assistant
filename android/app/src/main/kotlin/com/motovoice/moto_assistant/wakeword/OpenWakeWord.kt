@@ -135,17 +135,10 @@ class OpenWakeWord private constructor(
         private const val MEL_BUFFER_MAX = 970
         private const val SKIP_INITIAL_PREDICTIONS = 5
         private const val RAW_BUFFER_SECONDS = 10
-
-        // Speech at arm's length on the Nothing A059 arrived too quiet for the model; normalise toward this RMS.
-        // ponytail: fixed target + cap; tune TARGET_RMS / MAX_GAIN from the "level" log if range or false wakes change.
-        private const val TARGET_RMS = 3000f
-        private const val MAX_GAIN = 8f
-        private const val LEVEL_DECAY = 0.98f // per 80 ms frame: ~2.7 s release
         private const val STATS_EVERY_FRAMES = 25 // ~2 s
     }
 
     private var agc: AutomaticGainControl? = null
-    private var level = 0f
 
     // ------------------------------------------------------------------
     // State
@@ -297,13 +290,16 @@ class OpenWakeWord private constructor(
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) return false
 
         return try {
+            val helmetMic = MicRoute.helmetMic
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                if (helmetMic != null) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                else MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize.coerceAtLeast(FRAME_SAMPLES * 4)
             )
+            if (helmetMic != null) audioRecord?.preferredDevice = helmetMic
             val ok = audioRecord?.state == AudioRecord.STATE_INITIALIZED
             if (ok && AutomaticGainControl.isAvailable()) {
                 agc = AutomaticGainControl.create(audioRecord!!.audioSessionId)?.apply { enabled = true }
@@ -333,26 +329,16 @@ class OpenWakeWord private constructor(
         val frame = ShortArray(FRAME_SAMPLES)
         var frameCount = 0
         var maxScore = 0f
-        var gain = 1f
+        val micGain = MicGain()
 
         while (isRunning) {
             val read = audioRecord?.read(frame, 0, FRAME_SAMPLES) ?: break
             if (read != FRAME_SAMPLES) continue
 
-            // Peak-tracking level (fast attack, slow release) so gain follows the rider's voice, not each syllable.
-            var sumSq = 0.0
-            for (s in frame) sumSq += s * s.toDouble()
-            val rms = Math.sqrt(sumSq / FRAME_SAMPLES).toFloat()
-            level = maxOf(rms, level * LEVEL_DECAY)
-            gain = (TARGET_RMS / maxOf(level, 1f)).coerceIn(1f, MAX_GAIN)
-            if (gain > 1f) {
-                for (i in frame.indices) {
-                    frame[i] = (frame[i] * gain).coerceIn(-32768f, 32767f).toInt().toShort()
-                }
-            }
+            micGain.apply(frame)
 
             if (++frameCount % STATS_EVERY_FRAMES == 0) {
-                Log.d(TAG, "level=%.0f gain=%.1fx maxScore=%.3f".format(level, gain, maxScore))
+                Log.d(TAG, "level=%.0f gain=%.1fx maxScore=%.3f".format(micGain.lastLevel, micGain.gain, maxScore))
                 maxScore = 0f
             }
 
