@@ -49,7 +49,7 @@ object MotoEngine {
     private var detectorEngine = DEFAULT_ENGINE
 
     // Must match SettingsService.defaultWakeEngine on the Dart side.
-    private const val DEFAULT_ENGINE = "oww"
+    private const val DEFAULT_ENGINE = "sherpa_giga"
 
     fun get(context: Context): FlutterEngine {
         engine?.let { return it }

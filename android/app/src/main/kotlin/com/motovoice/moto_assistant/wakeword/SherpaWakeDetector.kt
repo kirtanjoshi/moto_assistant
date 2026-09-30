@@ -31,10 +31,6 @@ class SherpaWakeDetector(
     private var thread: Thread? = null
     private val main = Handler(Looper.getMainLooper())
 
-    // TEMP diagnostic: rolling 90 s of raw mic (before gain), kept across wake-up restarts and saved only when
-    // speech was heard since the last save, so a whole test session can be replayed offline. Remove after tuning.
-    private val ring = java.nio.ByteBuffer.allocate(CHUNK * 2 * 900).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-
     @Volatile private var running = false
     @Volatile override var isListening = false
         private set
@@ -100,7 +96,9 @@ class SherpaWakeDetector(
 
     @SuppressLint("MissingPermission") // RECORD_AUDIO is granted before riding mode can start.
     private fun loop() {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+        // Continuous inference, not latency-sensitive: background priority biases the scheduler
+        // toward little cores instead of the A720 performance core, cutting battery drain.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         val kws = try {
             spotter ?: buildSpotter().also { spotter = it }
         } catch (e: Exception) {
@@ -110,13 +108,11 @@ class SherpaWakeDetector(
         }
         val stream = kws.createStream(motoKeywords())
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        // TEMP diagnostic: mic source override from files/audio_source (1=MIC 5=CAMCORDER 6=VOICE_RECOGNITION
-        // 7=VOICE_COMMUNICATION 9=UNPROCESSED), set via `adb shell run-as`. Remove after tuning.
         val helmetMic = MicRoute.helmetMic
-        // The Bluetooth SCO mic is only reachable through the voice-communication capture path.
+        // Bluetooth SCO mic is only reachable through the voice-communication path. The phone mic uses the raw
+        // UNPROCESSED source: on the Nothing A059 it gave the range needed to trigger from a chair at a table.
         val source = if (helmetMic != null) MediaRecorder.AudioSource.VOICE_COMMUNICATION
-            else java.io.File(context.filesDir, "audio_source").takeIf { it.exists() }
-                ?.readText()?.trim()?.toIntOrNull() ?: MediaRecorder.AudioSource.VOICE_RECOGNITION
+            else MediaRecorder.AudioSource.UNPROCESSED
         val rec = AudioRecord(
             source, SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, CHUNK * 4),
@@ -136,23 +132,14 @@ class SherpaWakeDetector(
         val samples = FloatArray(CHUNK)
         val micGain = MicGain()
         var chunks = 0
-        val dumpFile = java.io.File(context.cacheDir, "kws_dump.pcm")
-        var heardSpeech = false
+        // Delete the voice recordings older test builds left behind.
+        java.io.File(context.cacheDir, "kws_dump.pcm").delete()
+        java.io.File(context.filesDir, "audio_source").delete()
         try {
             rec.startRecording()
             while (running) {
                 val n = rec.read(pcm, 0, CHUNK)
                 if (n != CHUNK) continue
-                if (!ring.hasRemaining()) ring.clear()
-                ring.asShortBuffer().put(pcm); ring.position(ring.position() + CHUNK * 2)
-                var peak = 0
-                for (s in pcm) peak = maxOf(peak, kotlin.math.abs(s.toInt()))
-                if (peak > 500) heardSpeech = true
-                if (chunks % 30 == 29 && heardSpeech) {
-                    heardSpeech = false
-                    val p = ring.position()
-                    dumpFile.outputStream().use { it.write(ring.array(), p, ring.capacity() - p); it.write(ring.array(), 0, p) }
-                }
                 micGain.apply(pcm)
                 for (i in 0 until n) samples[i] = pcm[i] / 32768f
                 stream.acceptWaveform(samples, SAMPLE_RATE)

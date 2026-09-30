@@ -3,7 +3,8 @@
     <!-- Audio & Recording Permissions for Helmet Intercom -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- No INTERNET in release: nothing in the app or its libraries uses the network, and without the
+         permission Android itself guarantees no data can leave the phone. Debug/profile keep it for dev tools. -->
     
     <!-- Storage & Audio Permissions for Local Music File Access -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
@@ -59,7 +60,8 @@
     </queries>
 
     <application
-        android:label="moto_assistant"
+        android:label="MotoVoice"
+        android:allowBackup="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -1,8 +1,8 @@
 import 'package:permission_handler/permission_handler.dart';
-// ignore_for_file: avoid_print
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../core/constants/app_colors.dart';
+import '../core/debug_log.dart';
 import '../models/parsed_intent.dart';
 import '../services/audio_feedback_service.dart';
 import '../services/intercom_audio_service.dart';
@@ -43,7 +43,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       await _feedbackService.init();
     } catch (e) {
-      print('[MotoVoice] TTS init error: $e');
+      debugLog('[MotoVoice] TTS init error: $e');
     }
 
     try {
@@ -55,16 +55,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _isScoActive = false;
 
     _speechService.onWakeWord = () {
-      print('[MotoVoice] onWakeWord callback fired');
+      debugLog('[MotoVoice] onWakeWord callback fired');
     };
 
     _speechService.onCommand = (rawText) async {
-      print('[MotoVoice] onCommand callback received: "$rawText"');
+      debugLog('[MotoVoice] onCommand callback received: "$rawText"');
       await _executeCommand(rawText);
     };
 
     _speechService.onError = (err) {
-      print('[MotoVoice] onError: $err');
+      debugLog('[MotoVoice] onError: $err');
     };
 
     // Initialize speech service in ready standby
@@ -81,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _executeIntent(ParsedIntent intent, String commandText) async {
-    print('[MotoVoice] Executing parsed intent: ${intent.type}');
+    debugLog('[MotoVoice] Executing parsed intent: ${intent.type}');
 
     switch (intent.type) {
       case IntentType.greeting:
@@ -191,7 +191,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         break;
 
       case IntentType.unknown:
-        print('[MotoVoice] Unrecognized command: $commandText');
+        debugLog('[MotoVoice] Unrecognized command: $commandText');
         _feedbackService.speak('Sorry, I didn\'t understand.');
         break;
     }

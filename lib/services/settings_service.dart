@@ -67,18 +67,22 @@ class SettingsService {
   static const String _keyRidingMode = 'pref_riding_mode';
   static const String _keyWakeEngine = 'pref_wake_engine';
 
-  // openWakeWord is the default: it is the only engine that has detected the rider's voice on the phone.
-  // Sherpa never fired on-device (models work offline on PC) — kept as experimental until that is solved.
-  static const String defaultWakeEngine = 'oww';
+  // Sherpa GigaSpeech "Hey Moto" is what the rider validated on the phone: foreground, background,
+  // chair distance and through the helmet intercom mic.
+  static const String defaultWakeEngine = 'sherpa_giga';
   static const Map<String, String> wakeEngines = {
-    'oww': 'openWakeWord (recommended)',
+    'sherpa_giga': 'Sherpa - GigaSpeech, "Hey Moto" (recommended)',
     'sherpa_phone': 'Sherpa - phonemes (experimental)',
-    'sherpa_giga': 'Sherpa - GigaSpeech (experimental)',
+    'oww': 'openWakeWord, "Hey Jarvis" (old)',
   };
 
   // openWakeWord: real "Hey Jarvis" scored 0.03-0.26 on the Nothing A059, never near its 0.5 default.
-  // Sherpa: 0.25 is the library's own default trigger threshold.
-  static double defaultWakeThreshold(String engine) => engine == 'oww' ? 0.025 : 0.25;
+  // Sherpa GigaSpeech: 0.10 caught every "Hey Moto" in recordings with no false wakes (Hey Moto adds +0.10).
+  static double defaultWakeThreshold(String engine) => switch (engine) {
+        'oww' => 0.025,
+        'sherpa_giga' => 0.10,
+        _ => 0.25,
+      };
 
   // openWakeWord only ships a "Hey Jarvis" model; "Hey Moto" is the phrase the rider's voice reliably triggers on Sherpa.
   static String wakePhrase(String engine) => engine == 'oww' ? 'Hey Jarvis' : 'Hey Moto';

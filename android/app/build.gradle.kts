@@ -1,5 +1,6 @@
 import java.net.URI
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -63,6 +64,22 @@ val sherpaAar = fetch(
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
     "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471",
 )
+// openWakeWord comes from JitPack, which builds from a git tag and has no checksum; pin the exact AAR like
+// Sherpa. Its own dependencies (below) come from Maven Central / Google.
+val openWakeWordAar = fetch(
+    "https://jitpack.io/com/github/msnilsen/openwakeword-android/0.1.2/openwakeword-android-0.1.2.aar",
+    "e14183c15d8d03b5541631cde13eeeddfe8a35ade3e3f82860b2ecbaaa14cff2",
+)
+
+// Release signing key lives outside git in android/key.properties (storeFile, storePassword, keyAlias, keyPassword).
+val keystoreProps = Properties().apply {
+    rootProject.file("key.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+gradle.taskGraph.whenReady {
+    if (keystoreProps.isEmpty && allTasks.any { it.project == project && it.name.contains("Release") }) {
+        throw GradleException("Release builds need android/key.properties with the release signing key.")
+    }
+}
 
 android {
     namespace = "com.motovoice.moto_assistant"
@@ -96,11 +113,20 @@ android {
     // Native-lib merging runs before abiFilters; the x86 copies are never packaged, so either one will do.
     packaging { jniLibs { pickFirsts += listOf("lib/x86/libonnxruntime.so", "lib/x86_64/libonnxruntime.so") } }
 
+    signingConfigs {
+        create("release") {
+            if (!keystoreProps.isEmpty) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
@@ -110,6 +136,8 @@ flutter {
 }
 
 dependencies {
-    implementation("com.github.msnilsen:openwakeword-android:0.1.2")
+    implementation(files(openWakeWordAar))
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+    implementation("androidx.core:core-ktx:1.12.0")
     implementation(files(sherpaAar))
 }

@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../core/debug_log.dart';
 import 'settings_service.dart';
 
 enum VoiceLoopState {
@@ -77,7 +78,7 @@ class MotoVoiceSpeechService {
       if (call.method == 'onWakeWordDetected') {
         final score = (call.arguments?['score'] as num? ?? 0).toDouble();
         final keyword = call.arguments?['keyword'] as String? ?? '';
-        print('[MotoVoice State] Native Wake Event | $keyword score: $score | currentState: $_state');
+        debugLog('[MotoVoice State] Native Wake Event | $keyword score: $score | currentState: $_state');
         // Sherpa reports which phrase fired (score is always 1); openWakeWord reports a real score.
         _handleWakeWordTrigger(heard: score < 1 ? '$keyword ${score.toStringAsFixed(2)}' : keyword);
       } else if (call.method == 'onRidingModeChanged') {
@@ -116,7 +117,7 @@ class MotoVoiceSpeechService {
       _updateState(VoiceLoopState.wakeWordListening, _standbyStatus);
       return true;
     } catch (e) {
-      print('[MotoVoice State] Init error: $e');
+      debugLog('[MotoVoice State] Init error: $e');
       _updateState(VoiceLoopState.wakeWordListening, 'Init Error: $e');
       onError?.call('Init Error: $e');
       return false;
@@ -147,7 +148,7 @@ class MotoVoiceSpeechService {
     stateNotifier.value = newState;
     isAwakeNotifier.value = (newState != VoiceLoopState.wakeWordListening);
     statusNotifier.value = statusMsg;
-    print('[MotoVoice State] STATE: ${_stateToString(newState)} | "$statusMsg"');
+    debugLog('[MotoVoice State] STATE: ${_stateToString(newState)} | "$statusMsg"');
   }
 
   String _stateToString(VoiceLoopState s) {
@@ -168,7 +169,7 @@ class MotoVoiceSpeechService {
 
     // Duplicate-trigger protection
     if (_state != VoiceLoopState.wakeWordListening) {
-      print('[MotoVoice State] Wake trigger ignored (already in ${_stateToString(_state)})');
+      debugLog('[MotoVoice State] Wake trigger ignored (already in ${_stateToString(_state)})');
       return;
     }
 
@@ -177,7 +178,7 @@ class MotoVoiceSpeechService {
       if (!ok) return;
     }
 
-    print('[MotoVoice State] ---> WAKE TRIGGERED: Releasing wake detector & starting STT');
+    debugLog('[MotoVoice State] ---> WAKE TRIGGERED: Releasing wake detector & starting STT');
     // Showing which phrase fired (and its score) helps calibrate the slider against the rider's voice/mic.
     _updateState(
       VoiceLoopState.commandListening,
@@ -226,7 +227,7 @@ class MotoVoiceSpeechService {
 
       _armCommandTimer();
     } catch (e) {
-      print('[MotoVoice State] Exception starting STT: $e');
+      debugLog('[MotoVoice State] Exception starting STT: $e');
       _recoverToWakeWordStandby();
     }
   }
@@ -235,7 +236,7 @@ class MotoVoiceSpeechService {
   void _armCommandTimer() {
     _commandTimer?.cancel();
     _commandTimer = Timer(_commandTimeout, () {
-      print('[MotoVoice State] Command listening timeout expired.');
+      debugLog('[MotoVoice State] Command listening timeout expired.');
       _runHeardOrGiveUp();
     });
   }
@@ -246,7 +247,7 @@ class MotoVoiceSpeechService {
     if (_state != VoiceLoopState.commandListening) return;
     final heard = partialTextNotifier.value.trim();
     if (heard.isNotEmpty) {
-      print('[MotoVoice State] No final result - running last heard words: "$heard"');
+      debugLog('[MotoVoice State] No final result - running last heard words: "$heard"');
       _processAndExecuteCommand(heard.toLowerCase());
     } else {
       _recoverToWakeWordStandby();
@@ -287,7 +288,7 @@ class MotoVoiceSpeechService {
     // Safety watchdog: ensure state recovers within 12 seconds if execution hangs
     _safetyRecoveryTimer?.cancel();
     _safetyRecoveryTimer = Timer(const Duration(seconds: 12), () {
-      print('[MotoVoice State] Safety watchdog triggered recovery');
+      debugLog('[MotoVoice State] Safety watchdog triggered recovery');
       _recoverToWakeWordStandby();
     });
 
@@ -296,7 +297,7 @@ class MotoVoiceSpeechService {
         await onCommand!(commandText);
       }
     } catch (e) {
-      print('[MotoVoice State] Execution exception: $e');
+      debugLog('[MotoVoice State] Execution exception: $e');
     }
 
     // Wait a brief window before resuming wake word so TTS has finished
@@ -306,7 +307,7 @@ class MotoVoiceSpeechService {
 
   void _handleStatus(String status) {
     if (_isDisposed) return;
-    print('[MotoVoice State] STT engine status: $status (currentState: $_state)');
+    debugLog('[MotoVoice State] STT engine status: $status (currentState: $_state)');
 
     if (status == 'notListening' || status == 'done') {
       if (_state == VoiceLoopState.commandListening) {
@@ -318,7 +319,7 @@ class MotoVoiceSpeechService {
 
   void _handleError(SpeechRecognitionError error) {
     if (_isDisposed) return;
-    print('[MotoVoice State] STT engine error: ${error.errorMsg} (permanent: ${error.permanent})');
+    debugLog('[MotoVoice State] STT engine error: ${error.errorMsg} (permanent: ${error.permanent})');
 
     if (_state == VoiceLoopState.commandListening) {
       statusNotifier.value = 'Sorry, I didn\'t understand.';
@@ -349,9 +350,9 @@ class MotoVoiceSpeechService {
     try {
       await Future.delayed(const Duration(milliseconds: 200));
       await wakeChannel.invokeMethod('startWakeWord');
-      print('[MotoVoice State] ---> WAKE_WORD_LISTENING restored cleanly.');
+      debugLog('[MotoVoice State] ---> WAKE_WORD_LISTENING restored cleanly.');
     } catch (e) {
-      print('[MotoVoice State] Error restarting native wake word: $e');
+      debugLog('[MotoVoice State] Error restarting native wake word: $e');
     }
   }
 

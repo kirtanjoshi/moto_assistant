@@ -182,7 +182,9 @@ class OpenWakeWord private constructor(
         isRunning = true
 
         processingThread = Thread({
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+            // Continuous inference, not latency-sensitive: background priority biases the scheduler
+            // toward little cores instead of the A720 performance core, cutting battery drain.
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 if (melSpecSession == null) initModels()
                 initBuffers()
